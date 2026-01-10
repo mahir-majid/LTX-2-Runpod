@@ -76,6 +76,10 @@ class LTX2API:
 
         log_info(f"GPU: {torch.cuda.get_device_name(0)}")
         log_info(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / (1024**3):.1f} GB")
+        
+        # Verify PyTorch CUDA allocator config
+        pytorch_alloc_conf = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "NOT SET")
+        log_info(f"PYTORCH_CUDA_ALLOC_CONF: {pytorch_alloc_conf}")
 
         # Verify models exist
         self._verify_models()
