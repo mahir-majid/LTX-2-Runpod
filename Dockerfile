@@ -52,9 +52,6 @@ RUN mkdir -p /workspace/models/checkpoints /workspace/models/gemma
 COPY download_models.py ./
 COPY api_server.py ./
 
-# Download models at build time
-RUN /workspace/.venv/bin/python download_models.py
-
 # Expose port for API (not used for serverless, but kept for consistency)
 EXPOSE 8000
 

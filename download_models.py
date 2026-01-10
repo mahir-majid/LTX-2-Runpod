@@ -9,6 +9,9 @@ import time
 from pathlib import Path
 from huggingface_hub import hf_hub_download, snapshot_download
 
+# Get HuggingFace token from environment variable (required)
+HF_TOKEN = os.environ["HF_TOKEN"]
+
 
 def log_info(message):
     """Log info message"""
@@ -82,7 +85,8 @@ def download_transformer_checkpoint():
             filename="ltx-video-2b-v0.9.1.safetensors",
             local_dir="/workspace/models/checkpoints",
             local_dir_use_symlinks=False,
-            resume_download=True
+            resume_download=True,
+            token=HF_TOKEN
         )
 
         download_time = time.time() - start_time
@@ -124,7 +128,8 @@ def download_spatial_upsampler():
             filename="ltx_video_vae_upsampler.safetensors",
             local_dir="/workspace/models/checkpoints",
             local_dir_use_symlinks=False,
-            resume_download=True
+            resume_download=True,
+            token=HF_TOKEN
         )
 
         download_time = time.time() - start_time
@@ -173,7 +178,8 @@ def download_gemma_encoder():
             local_dir=gemma_dir,
             local_dir_use_symlinks=False,
             resume_download=True,
-            ignore_patterns=["*.msgpack", "*.h5", "*.ot"]  # Skip non-PyTorch formats
+            ignore_patterns=["*.msgpack", "*.h5", "*.ot"],  # Skip non-PyTorch formats
+            token=HF_TOKEN
         )
 
         download_time = time.time() - start_time

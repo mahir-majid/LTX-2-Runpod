@@ -29,6 +29,13 @@ from ltx_core.model.video_vae import TilingConfig, get_video_chunks_number
 from ltx_pipelines.utils.constants import AUDIO_SAMPLE_RATE
 from ltx_pipelines.utils.media_io import encode_video
 
+# Import download functions for automatic model downloading
+from download_models import (
+    download_transformer_checkpoint,
+    download_spatial_upsampler,
+    download_gemma_encoder
+)
+
 
 # Logging utilities
 def log_info(message):
@@ -76,7 +83,7 @@ class LTX2API:
         log_success("LTX2 API initialized successfully")
 
     def _verify_models(self):
-        """Verify that all required models are present"""
+        """Verify that all required models are present, download if missing"""
         log_step("Verifying model files...")
 
         required_files = [
@@ -88,12 +95,36 @@ class LTX2API:
         missing_files = [f for f in required_files if not os.path.exists(f)]
 
         if missing_files:
-            log_error("Missing required model files:")
+            log_warning("Missing required model files, downloading...")
             for f in missing_files:
-                log_error(f"  - {f}")
-            raise FileNotFoundError(
-                "Required models not found. Run download_models.py first."
-            )
+                log_warning(f"  - {f}")
+
+            # Download missing models
+            try:
+                log_step("Starting model downloads (this may take 15-20 minutes)...")
+
+                # Download transformer if missing
+                if not os.path.exists(MODEL_CONFIG["checkpoint_path"]):
+                    if not download_transformer_checkpoint():
+                        raise RuntimeError("Failed to download transformer checkpoint")
+
+                # Download spatial upsampler if missing
+                if not os.path.exists(MODEL_CONFIG["spatial_upsampler_path"]):
+                    if not download_spatial_upsampler():
+                        raise RuntimeError("Failed to download spatial upsampler")
+
+                # Download Gemma encoder if missing
+                if not os.path.exists(os.path.join(MODEL_CONFIG["gemma_root"], "config.json")):
+                    if not download_gemma_encoder():
+                        raise RuntimeError("Failed to download Gemma text encoder")
+
+                log_success("All models downloaded successfully")
+
+            except Exception as e:
+                log_error(f"Model download failed: {str(e)}")
+                raise RuntimeError(
+                    f"Failed to download required models: {str(e)}"
+                )
 
         log_success("All model files verified")
 
