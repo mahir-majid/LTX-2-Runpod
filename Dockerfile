@@ -4,6 +4,7 @@ FROM nvidia/cuda:12.9.0-devel-ubuntu22.04
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
+ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
