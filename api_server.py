@@ -24,6 +24,7 @@ sys.path.insert(0, "/workspace/.venv/lib/python3.10/site-packages")
 import torch
 import requests
 import runpod
+import gc
 from ltx_pipelines.distilled import DistilledPipeline
 from ltx_core.model.video_vae import TilingConfig, get_video_chunks_number
 from ltx_pipelines.utils.constants import AUDIO_SAMPLE_RATE
@@ -35,6 +36,42 @@ from download_models import (
     download_spatial_upsampler,
     download_gemma_encoder
 )
+
+
+# ============ MEMORY DIAGNOSTICS ============
+def log_memory(label: str):
+    """Log GPU memory usage at a specific point"""
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / (1024**3)
+        reserved = torch.cuda.memory_reserved() / (1024**3)
+        max_allocated = torch.cuda.max_memory_allocated() / (1024**3)
+        print(f"🔍 [MEMORY] {label}")
+        print(f"           Allocated: {allocated:.2f} GB | Reserved: {reserved:.2f} GB | Peak: {max_allocated:.2f} GB")
+
+# Patch cleanup_memory to log
+from ltx_pipelines.utils import helpers as ltx_helpers
+_original_cleanup = ltx_helpers.cleanup_memory
+def logged_cleanup():
+    log_memory("Before cleanup_memory()")
+    _original_cleanup()
+    log_memory("After cleanup_memory()")
+ltx_helpers.cleanup_memory = logged_cleanup
+
+# Patch ModelLedger methods to log
+from ltx_pipelines.utils.model_ledger import ModelLedger
+_model_ledger_methods = ['text_encoder', 'transformer', 'video_encoder', 'video_decoder', 'audio_decoder', 'vocoder', 'spatial_upsampler']
+for method_name in _model_ledger_methods:
+    if hasattr(ModelLedger, method_name):
+        original = getattr(ModelLedger, method_name)
+        def make_logged(name, orig):
+            def logged(self):
+                log_memory(f"Before ModelLedger.{name}()")
+                result = orig(self)
+                log_memory(f"After ModelLedger.{name}()")
+                return result
+            return logged
+        setattr(ModelLedger, method_name, make_logged(method_name, original))
+# ============ END MEMORY DIAGNOSTICS ============
 
 
 # Logging utilities
@@ -139,6 +176,7 @@ class LTX2API:
             return
 
         log_step("Loading LTX-2 DistilledPipeline...")
+        log_memory("Before pipeline creation")
 
         try:
             self.pipeline = DistilledPipeline(
@@ -151,6 +189,7 @@ class LTX2API:
             )
 
             self.models_loaded = True
+            log_memory("After pipeline creation")
             log_success("Pipeline loaded successfully")
             log_info("Optimizations: FP8 enabled")
 
@@ -225,6 +264,8 @@ class LTX2API:
         Returns:
             Path to output MP4 file
         """
+        log_memory("Start of generate_video()")
+        
         # Load models if not loaded
         if not self.models_loaded:
             self.load_models()
@@ -246,24 +287,32 @@ class LTX2API:
             # TilingConfig for memory-efficient VAE decoding
             tiling_config = TilingConfig.default()
 
+            # Reset peak memory stats before pipeline call
+            torch.cuda.reset_peak_memory_stats()
+            log_memory("Before pipeline call")
+
             # Run pipeline
-            video_iterator, audio = self.pipeline(
-                prompt=prompt,
-                seed=seed,
-                height=height,
-                width=width,
-                num_frames=num_frames,
-                frame_rate=frame_rate,
-                images=images,
-                tiling_config=tiling_config,
-                enhance_prompt=enhance_prompt
-            )
+            with torch.inference_mode():
+                video_iterator, audio = self.pipeline(
+                    prompt=prompt,
+                    seed=seed,
+                    height=height,
+                    width=width,
+                    num_frames=num_frames,
+                    frame_rate=frame_rate,
+                    images=images,
+                    tiling_config=tiling_config,
+                    enhance_prompt=enhance_prompt
+                )
+
+            log_memory("After pipeline call")
 
             # Calculate video chunks for encoding
             video_chunks_number = get_video_chunks_number(num_frames, tiling_config)
 
             # Encode to MP4
             log_step("Encoding video to MP4...")
+            log_memory("Before video encoding")
             encode_video(
                 video=video_iterator,
                 fps=frame_rate,
@@ -272,6 +321,7 @@ class LTX2API:
                 output_path=output_path,
                 video_chunks_number=video_chunks_number
             )
+            log_memory("After video encoding")
 
             log_success(f"Video generated: {output_path}")
             return output_path
