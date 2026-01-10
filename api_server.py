@@ -291,36 +291,39 @@ class LTX2API:
             torch.cuda.reset_peak_memory_stats()
             log_memory("Before pipeline call")
 
-            # Run pipeline
-            video_iterator, audio = self.pipeline(
-                prompt=prompt,
-                seed=seed,
-                height=height,
-                width=width,
-                num_frames=num_frames,
-                frame_rate=frame_rate,
-                images=images,
-                tiling_config=tiling_config,
-                enhance_prompt=enhance_prompt
-            )
+            # Run pipeline and encode video with autograd disabled
+            # This is critical for memory - without no_grad, PyTorch retains
+            # computation graphs and FP8 upcast tensors, causing OOM
+            with torch.no_grad():
+                video_iterator, audio = self.pipeline(
+                    prompt=prompt,
+                    seed=seed,
+                    height=height,
+                    width=width,
+                    num_frames=num_frames,
+                    frame_rate=frame_rate,
+                    images=images,
+                    tiling_config=tiling_config,
+                    enhance_prompt=enhance_prompt
+                )
 
-            log_memory("After pipeline call")
+                log_memory("After pipeline call")
 
-            # Calculate video chunks for encoding
-            video_chunks_number = get_video_chunks_number(num_frames, tiling_config)
+                # Calculate video chunks for encoding
+                video_chunks_number = get_video_chunks_number(num_frames, tiling_config)
 
-            # Encode to MP4
-            log_step("Encoding video to MP4...")
-            log_memory("Before video encoding")
-            encode_video(
-                video=video_iterator,
-                fps=frame_rate,
-                audio=audio,
-                audio_sample_rate=AUDIO_SAMPLE_RATE,
-                output_path=output_path,
-                video_chunks_number=video_chunks_number
-            )
-            log_memory("After video encoding")
+                # Encode to MP4
+                log_step("Encoding video to MP4...")
+                log_memory("Before video encoding")
+                encode_video(
+                    video=video_iterator,
+                    fps=frame_rate,
+                    audio=audio,
+                    audio_sample_rate=AUDIO_SAMPLE_RATE,
+                    output_path=output_path,
+                    video_chunks_number=video_chunks_number
+                )
+                log_memory("After video encoding")
 
             log_success(f"Video generated: {output_path}")
             return output_path
