@@ -24,9 +24,8 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv package manager and set PATH
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
-    echo 'export PATH="/root/.cargo/bin:$PATH"' >> ~/.bashrc
-ENV PATH="/root/.cargo/bin:$PATH"
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:$PATH"
 
 # Create working directory
 WORKDIR /workspace
@@ -37,7 +36,7 @@ COPY packages/ ./packages/
 
 # Install workspace dependencies with xformers
 # This will install PyTorch 2.7 from cu129 index (specified in ltx-core/pyproject.toml)
-RUN /root/.cargo/bin/uv sync --frozen --extra xformers
+RUN uv sync --frozen --extra xformers
 
 # Install additional dependencies for RunPod
 RUN /workspace/.venv/bin/pip install --no-cache-dir \
