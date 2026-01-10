@@ -129,7 +129,7 @@ class LTX2API:
         log_success("All model files verified")
 
     def load_models(self):
-        """Load DistilledPipeline with FP8 + XFormers optimizations"""
+        """Load DistilledPipeline with FP8 optimization"""
         if self.models_loaded:
             log_info("Models already loaded")
             return
@@ -148,7 +148,7 @@ class LTX2API:
 
             self.models_loaded = True
             log_success("Pipeline loaded successfully")
-            log_info("Optimizations: FP8 enabled, XFormers auto-detected")
+            log_info("Optimizations: FP8 enabled")
 
         except Exception as e:
             log_error(f"Failed to load pipeline: {str(e)}")

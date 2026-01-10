@@ -34,9 +34,9 @@ WORKDIR /workspace
 COPY pyproject.toml uv.lock ./
 COPY packages/ ./packages/
 
-# Install workspace dependencies with xformers
+# Install workspace dependencies
 # This will install PyTorch 2.7 from cu129 index (specified in ltx-core/pyproject.toml)
-RUN uv sync --frozen --extra xformers && \
+RUN uv sync --frozen && \
     uv cache clean
 
 # Install additional dependencies for RunPod
