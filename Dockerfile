@@ -40,11 +40,10 @@ RUN uv sync --frozen --extra xformers && \
     uv cache clean
 
 # Install additional dependencies for RunPod
-RUN /workspace/.venv/bin/pip install --no-cache-dir \
+RUN uv pip install --no-cache \
     runpod>=1.5.0 \
     requests>=2.31.0 \
-    huggingface_hub>=0.30.0 && \
-    rm -rf /root/.cache/pip
+    huggingface_hub>=0.30.0
 
 # Create model directories
 RUN mkdir -p /workspace/models/checkpoints /workspace/models/gemma
