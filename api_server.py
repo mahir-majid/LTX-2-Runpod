@@ -292,18 +292,17 @@ class LTX2API:
             log_memory("Before pipeline call")
 
             # Run pipeline
-            with torch.inference_mode():
-                video_iterator, audio = self.pipeline(
-                    prompt=prompt,
-                    seed=seed,
-                    height=height,
-                    width=width,
-                    num_frames=num_frames,
-                    frame_rate=frame_rate,
-                    images=images,
-                    tiling_config=tiling_config,
-                    enhance_prompt=enhance_prompt
-                )
+            video_iterator, audio = self.pipeline(
+                prompt=prompt,
+                seed=seed,
+                height=height,
+                width=width,
+                num_frames=num_frames,
+                frame_rate=frame_rate,
+                images=images,
+                tiling_config=tiling_config,
+                enhance_prompt=enhance_prompt
+            )
 
             log_memory("After pipeline call")
 
