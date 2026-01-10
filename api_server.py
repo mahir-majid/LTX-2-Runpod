@@ -56,8 +56,8 @@ def log_step(message):
 
 # Model configuration
 MODEL_CONFIG = {
-    "checkpoint_path": "/workspace/models/checkpoints/ltx-video-2b-v0.9.1.safetensors",
-    "spatial_upsampler_path": "/workspace/models/checkpoints/ltx_video_vae_upsampler.safetensors",
+    "checkpoint_path": "/workspace/models/checkpoints/ltx-2-19b-distilled-fp8.safetensors",
+    "spatial_upsampler_path": "/workspace/models/checkpoints/ltx-2-spatial-upscaler-x2-1.0.safetensors",
     "gemma_root": "/workspace/models/gemma",
 }
 

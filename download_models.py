@@ -65,9 +65,9 @@ def create_directories():
 def download_transformer_checkpoint():
     """Download LTX-2 transformer checkpoint"""
     log_step("Downloading LTX-2 transformer checkpoint...")
-    log_info("Repository: Lightricks/LTX-Video")
+    log_info("Repository: Lightricks/LTX-2")
 
-    checkpoint_path = "/workspace/models/checkpoints/ltx-video-2b-v0.9.1.safetensors"
+    checkpoint_path = "/workspace/models/checkpoints/ltx-2-19b-distilled-fp8.safetensors"
 
     if os.path.exists(checkpoint_path):
         size = os.path.getsize(checkpoint_path) / (1024**3)
@@ -76,13 +76,13 @@ def download_transformer_checkpoint():
         return True
 
     try:
-        log_info("Downloading ltx-video-2b-v0.9.1.safetensors from HuggingFace...")
+        log_info("Downloading ltx-2-19b-distilled-fp8.safetensors from HuggingFace...")
         log_step("Starting download...")
         start_time = time.time()
 
         downloaded_path = hf_hub_download(
-            repo_id="Lightricks/LTX-Video",
-            filename="ltx-video-2b-v0.9.1.safetensors",
+            repo_id="Lightricks/LTX-2",
+            filename="ltx-2-19b-distilled-fp8.safetensors",
             local_dir="/workspace/models/checkpoints",
             local_dir_use_symlinks=False,
             resume_download=True,
@@ -101,17 +101,17 @@ def download_transformer_checkpoint():
         log_error(f"Error downloading transformer checkpoint: {e}")
         log_info("\n📋 Troubleshooting:")
         log_info("1. Check your internet connection")
-        log_info("2. Visit: https://huggingface.co/Lightricks/LTX-Video")
-        log_info("3. Ensure you have sufficient disk space (~12GB)")
+        log_info("2. Visit: https://huggingface.co/Lightricks/LTX-2")
+        log_info("3. Ensure you have sufficient disk space (~20GB)")
         return False
 
 
 def download_spatial_upsampler():
     """Download spatial upsampler model"""
     log_step("Downloading spatial upsampler...")
-    log_info("Repository: Lightricks/LTX-Video")
+    log_info("Repository: Lightricks/LTX-2")
 
-    upsampler_path = "/workspace/models/checkpoints/ltx_video_vae_upsampler.safetensors"
+    upsampler_path = "/workspace/models/checkpoints/ltx-2-spatial-upscaler-x2-1.0.safetensors"
 
     if os.path.exists(upsampler_path):
         size = os.path.getsize(upsampler_path) / (1024**3)
@@ -124,8 +124,8 @@ def download_spatial_upsampler():
         start_time = time.time()
 
         downloaded_path = hf_hub_download(
-            repo_id="Lightricks/LTX-Video",
-            filename="ltx_video_vae_upsampler.safetensors",
+            repo_id="Lightricks/LTX-2",
+            filename="ltx-2-spatial-upscaler-x2-1.0.safetensors",
             local_dir="/workspace/models/checkpoints",
             local_dir_use_symlinks=False,
             resume_download=True,
@@ -144,14 +144,14 @@ def download_spatial_upsampler():
         log_error(f"Error downloading spatial upsampler: {e}")
         log_info("\n📋 Troubleshooting:")
         log_info("1. Check your internet connection")
-        log_info("2. Visit: https://huggingface.co/Lightricks/LTX-Video")
+        log_info("2. Visit: https://huggingface.co/Lightricks/LTX-2")
         return False
 
 
 def download_gemma_encoder():
-    """Download Gemma-2-2B text encoder"""
-    log_step("Downloading Gemma-2-2B text encoder...")
-    log_info("Repository: google/gemma-2-2b")
+    """Download Gemma-3-12B text encoder"""
+    log_step("Downloading Gemma-3-12B text encoder...")
+    log_info("Repository: google/gemma-3-12b-it-qat-q4_0-unquantized")
 
     gemma_dir = "/workspace/models/gemma"
 
@@ -174,7 +174,7 @@ def download_gemma_encoder():
         start_time = time.time()
 
         snapshot_download(
-            repo_id="google/gemma-2-2b",
+            repo_id="google/gemma-3-12b-it-qat-q4_0-unquantized",
             local_dir=gemma_dir,
             local_dir_use_symlinks=False,
             resume_download=True,
@@ -193,8 +193,8 @@ def download_gemma_encoder():
         log_error(f"Error downloading Gemma text encoder: {e}")
         log_info("\n📋 Troubleshooting:")
         log_info("1. Check your internet connection")
-        log_info("2. Visit: https://huggingface.co/google/gemma-2-2b")
-        log_info("3. Ensure you have sufficient disk space (~5GB)")
+        log_info("2. Visit: https://huggingface.co/google/gemma-3-12b-it-qat-q4_0-unquantized")
+        log_info("3. Ensure you have sufficient disk space (~10GB)")
         return False
 
 
@@ -203,8 +203,8 @@ def verify_model_structure():
     log_step("Verifying model structure...")
 
     required_paths = [
-        '/workspace/models/checkpoints/ltx-video-2b-v0.9.1.safetensors',
-        '/workspace/models/checkpoints/ltx_video_vae_upsampler.safetensors',
+        '/workspace/models/checkpoints/ltx-2-19b-distilled-fp8.safetensors',
+        '/workspace/models/checkpoints/ltx-2-spatial-upscaler-x2-1.0.safetensors',
         '/workspace/models/gemma/config.json',
         '/workspace/models/gemma/tokenizer.json'
     ]
