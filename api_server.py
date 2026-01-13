@@ -12,7 +12,7 @@ import shutil
 import warnings
 import logging
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
@@ -29,6 +29,8 @@ from ltx_pipelines.distilled import DistilledPipeline
 from ltx_core.model.video_vae import TilingConfig, get_video_chunks_number
 from ltx_pipelines.utils.constants import AUDIO_SAMPLE_RATE
 from ltx_pipelines.utils.media_io import encode_video
+from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
+from huggingface_hub import hf_hub_download
 
 # Import download functions for automatic model downloading
 from download_models import (
@@ -106,6 +108,7 @@ class LTX2API:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.pipeline = None
         self.models_loaded = False
+        self.current_lora_config = None  # Track current LoRA config
 
         # GPU check
         if not torch.cuda.is_available():
@@ -169,13 +172,69 @@ class LTX2API:
 
         log_success("All model files verified")
 
-    def load_models(self):
-        """Load DistilledPipeline with FP8 optimization"""
-        if self.models_loaded:
-            log_info("Models already loaded")
+    def _get_lora_path(self, camera_lora: Optional[str]) -> Optional[str]:
+        """Get LoRA file path, downloading from HuggingFace if needed"""
+        if camera_lora is None:
+            return None
+        
+        if camera_lora == "Static":
+            repo_id = "Lightricks/LTX-2-19b-LoRA-Camera-Control-Static"
+            filename = "ltx-2-19b-lora-camera-control-static.safetensors"
+            local_path = f"/workspace/models/checkpoints/{filename}"
+            
+            # Check if already downloaded
+            if os.path.exists(local_path):
+                log_info(f"LoRA file already exists: {local_path}")
+                return local_path
+            
+            # Download from HuggingFace
+            try:
+                log_step(f"Downloading LoRA from HuggingFace: {repo_id}")
+                hf_token = os.environ.get("HF_TOKEN")
+                
+                downloaded_path = hf_hub_download(
+                    repo_id=repo_id,
+                    filename=filename,
+                    local_dir="/workspace/models/checkpoints",
+                    local_dir_use_symlinks=False,
+                    resume_download=True,
+                    token=hf_token
+                )
+                
+                log_success(f"LoRA downloaded successfully: {downloaded_path}")
+                return downloaded_path
+            except Exception as e:
+                log_error(f"Failed to download LoRA: {str(e)}")
+                raise RuntimeError(f"Failed to download LoRA from HuggingFace: {str(e)}")
+        else:
+            log_warning(f"Unknown camera_lora value: {camera_lora}. Supported values: 'Static'")
+            return None
+
+    def load_models(self, loras: Optional[List[LoraPathStrengthAndSDOps]] = None):
+        """Load DistilledPipeline with FP8 optimization and optional LoRAs"""
+        # Check if LoRA config changed
+        lora_config_key = tuple(sorted([(l.path, l.strength) for l in (loras or [])]))
+        
+        if self.models_loaded and self.current_lora_config == lora_config_key:
+            log_info("Models already loaded with same LoRA config")
             return
+        
+        # If LoRA config changed, unload existing pipeline
+        if self.models_loaded and self.current_lora_config != lora_config_key:
+            log_step("LoRA config changed, reloading pipeline...")
+            self.pipeline = None
+            self.models_loaded = False
+            gc.collect()
+            torch.cuda.empty_cache()
 
         log_step("Loading LTX-2 DistilledPipeline...")
+        if loras:
+            log_info(f"Using {len(loras)} LoRA(s)")
+            for lora in loras:
+                log_info(f"  - LoRA: {lora.path} (strength: {lora.strength})")
+        else:
+            log_info("No LoRAs configured")
+        
         log_memory("Before pipeline creation")
 
         try:
@@ -183,15 +242,18 @@ class LTX2API:
                 checkpoint_path=MODEL_CONFIG["checkpoint_path"],
                 gemma_root=MODEL_CONFIG["gemma_root"],
                 spatial_upsampler_path=MODEL_CONFIG["spatial_upsampler_path"],
-                loras=[],  # No LoRAs for base implementation
+                loras=loras or [],
                 device=self.device,
                 fp8transformer=True  # Enable FP8 optimization
             )
 
             self.models_loaded = True
+            self.current_lora_config = lora_config_key
             log_memory("After pipeline creation")
             log_success("Pipeline loaded successfully")
             log_info("Optimizations: FP8 enabled")
+            if loras:
+                log_info(f"LoRA(s) loaded: {len(loras)}")
 
         except Exception as e:
             log_error(f"Failed to load pipeline: {str(e)}")
@@ -244,7 +306,9 @@ class LTX2API:
         frame_rate: float = 24.0,
         image_frame_idx: int = 0,
         image_strength: float = 0.8,
-        enhance_prompt: bool = False
+        enhance_prompt: bool = False,
+        camera_lora: Optional[str] = "Static",
+        camera_lora_strength: float = 1.0
     ) -> str:
         """
         Generate video using DistilledPipeline
@@ -260,15 +324,25 @@ class LTX2API:
             image_frame_idx: Frame index for image conditioning
             image_strength: Conditioning strength (0-1)
             enhance_prompt: Use Gemma to enhance prompt
+            camera_lora: Camera LoRA type ("Static" for static camera, None to disable LoRA, default: "Static")
+            camera_lora_strength: LoRA strength (0.0-1.0, default: 1.0)
 
         Returns:
             Path to output MP4 file
         """
         log_memory("Start of generate_video()")
         
-        # Load models if not loaded
-        if not self.models_loaded:
-            self.load_models()
+        # Get LoRA path if requested
+        lora_path = self._get_lora_path(camera_lora)
+        loras = []
+        if lora_path:
+            loras = [LoraPathStrengthAndSDOps(lora_path, camera_lora_strength, LTXV_LORA_COMFY_RENAMING_MAP)]
+            log_info(f"🎥 Using Camera LoRA: {camera_lora} (path: {lora_path}, strength: {camera_lora_strength})")
+        else:
+            log_info("🎥 No Camera LoRA configured")
+        
+        # Load models with LoRAs
+        self.load_models(loras=loras if loras else None)
 
         # Prepare image conditioning
         images = []
@@ -364,7 +438,9 @@ def handler(job):
         "frame_rate": 24.0,  # optional, default: 24.0
         "image_frame_idx": 0,  # optional, default: 0
         "image_strength": 0.8,  # optional, default: 0.8
-        "enhance_prompt": false  # optional, default: false
+        "enhance_prompt": false,  # optional, default: false
+        "camera_lora": "Static",  # optional, default: "Static". Use "Static" for static camera LoRA, null to disable
+        "camera_lora_strength": 1.0  # optional, default: 1.0. LoRA strength (0.0-1.0)
     }
 
     Returns:
@@ -400,6 +476,8 @@ def handler(job):
         image_frame_idx = input_data.get("image_frame_idx", 0)
         image_strength = input_data.get("image_strength", 0.8)
         enhance_prompt = input_data.get("enhance_prompt", False)
+        camera_lora = input_data.get("camera_lora", "Static")
+        camera_lora_strength = input_data.get("camera_lora_strength", 1.0)
 
         # Validate dimensions
         if height % 64 != 0 or width % 64 != 0:
@@ -413,6 +491,13 @@ def handler(job):
             return {
                 "success": False,
                 "error": "num_frames must follow formula: 8*K + 1 (e.g., 9, 17, 25, ..., 121)"
+            }
+
+        # Validate camera_lora_strength
+        if camera_lora_strength < 0.0 or camera_lora_strength > 1.0:
+            return {
+                "success": False,
+                "error": "camera_lora_strength must be between 0.0 and 1.0"
             }
 
         # Prepare image if provided
@@ -432,7 +517,9 @@ def handler(job):
             frame_rate=frame_rate,
             image_frame_idx=image_frame_idx,
             image_strength=image_strength,
-            enhance_prompt=enhance_prompt
+            enhance_prompt=enhance_prompt,
+            camera_lora=camera_lora,
+            camera_lora_strength=camera_lora_strength
         )
 
         # Convert to base64
