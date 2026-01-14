@@ -152,14 +152,13 @@ def load_and_encode_reference_audio(
         mel_bins=mel_bins,
         mel_hop_length=mel_hop_length,
         n_fft=n_fft
-    )
+    ).to(device)  # Move AudioProcessor to the same device as waveform
 
     # Convert waveform to spectrogram (mel spectrogram)
     spectrogram = audio_processor.waveform_to_mel(
         waveform.unsqueeze(0),
         waveform_sample_rate=sample_rate
     )
-    spectrogram = spectrogram.to(device)
 
     # Encode to latent
     with torch.no_grad():
