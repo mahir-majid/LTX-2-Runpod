@@ -128,9 +128,10 @@ def load_and_encode_reference_audio(
         resampler = torchaudio.transforms.Resample(sample_rate, AUDIO_SAMPLE_RATE)
         waveform = resampler(waveform)
 
-    # Convert to mono if stereo
-    if waveform.shape[0] > 1:
-        waveform = waveform.mean(dim=0, keepdim=True)
+    # Audio encoder expects stereo (2 channels) - duplicate mono if needed
+    if waveform.shape[0] == 1:
+        log_info("Mono audio detected, duplicating to stereo for audio encoder")
+        waveform = waveform.repeat(2, 1)  # [1, samples] -> [2, samples]
 
     # Move to device
     waveform = waveform.to(device)
