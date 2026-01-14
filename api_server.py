@@ -161,6 +161,8 @@ def load_and_encode_reference_audio(
     )
 
     # Encode to latent
+    # Cast spectrogram to match audio_encoder dtype (e.g., bfloat16)
+    spectrogram = spectrogram.to(dtype=next(audio_encoder.parameters()).dtype)
     with torch.no_grad():
         reference_latent = audio_encoder(spectrogram)
 
