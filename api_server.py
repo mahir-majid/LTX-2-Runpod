@@ -457,8 +457,13 @@ class LTX2API:
                 # Audio latent frames = (num_video_frames - 1) based on LTX-2 architecture
                 target_audio_frames = num_frames
 
-                # Load audio encoder
-                audio_encoder = self.pipeline.model_ledger.audio_encoder()
+                # Load audio encoder (not in ModelLedger, must load separately)
+                from ltx_trainer.model_loader import load_audio_vae_encoder
+                audio_encoder = load_audio_vae_encoder(
+                    checkpoint_path=MODEL_CONFIG["checkpoint_path"],
+                    device=self.device,
+                    dtype=torch.bfloat16
+                )
 
                 # Encode reference audio
                 reference_audio_latent = load_and_encode_reference_audio(
