@@ -464,9 +464,13 @@ class LTX2API:
             if reference_audio_path:
                 log_info(f"🎤 Using reference audio for voice consistency (noise_scale={audio_noise_scale})")
 
-                # Calculate target audio frames
-                # Audio latent frames = (num_video_frames - 1) based on LTX-2 architecture
-                target_audio_frames = num_frames
+                # Calculate target audio latent frames using same formula as pipeline
+                # Formula: round(duration * latents_per_second)
+                # where latents_per_second = sample_rate / hop_length / downsample_factor = 16000/160/4 = 25
+                duration = num_frames / frame_rate
+                latents_per_second = 16000 / 160 / 4  # = 25
+                target_audio_frames = round(duration * latents_per_second)
+                log_info(f"Audio latent frames: {target_audio_frames} (from {num_frames} video frames at {frame_rate} FPS)")
 
                 # Load audio encoder (not in ModelLedger, must load separately)
                 from ltx_trainer.model_loader import load_audio_vae_encoder
