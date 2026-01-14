@@ -141,15 +141,24 @@ def load_and_encode_reference_audio(
     # Audio encoder expects spectrogram input, so we need to use AudioProcessor
     from ltx_core.model.audio_vae import AudioProcessor
 
+    # Get audio parameters from encoder (with fallback defaults)
+    sample_rate = getattr(audio_encoder, 'sample_rate', AUDIO_SAMPLE_RATE)
+    mel_bins = getattr(audio_encoder, 'mel_bins', 64)
+    mel_hop_length = getattr(audio_encoder, 'mel_hop_length', 160)
+    n_fft = getattr(audio_encoder, 'n_fft', 1024)
+
     audio_processor = AudioProcessor(
-        sample_rate=AUDIO_SAMPLE_RATE,
-        n_fft=1024,
-        hop_length=160,
-        n_mels=64
+        sample_rate=sample_rate,
+        mel_bins=mel_bins,
+        mel_hop_length=mel_hop_length,
+        n_fft=n_fft
     )
 
-    # Convert waveform to spectrogram
-    spectrogram = audio_processor.waveform_to_spectrogram(waveform.unsqueeze(0))
+    # Convert waveform to spectrogram (mel spectrogram)
+    spectrogram = audio_processor.waveform_to_mel(
+        waveform.unsqueeze(0),
+        waveform_sample_rate=sample_rate
+    )
     spectrogram = spectrogram.to(device)
 
     # Encode to latent
