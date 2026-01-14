@@ -22,6 +22,8 @@ logging.getLogger("torch._dynamo").setLevel(logging.WARNING)
 sys.path.insert(0, "/workspace/.venv/lib/python3.10/site-packages")
 
 import torch
+import torch.nn.functional as F
+import torchaudio
 import requests
 import runpod
 import gc
@@ -30,6 +32,7 @@ from ltx_core.model.video_vae import TilingConfig, get_video_chunks_number
 from ltx_pipelines.utils.constants import AUDIO_SAMPLE_RATE
 from ltx_pipelines.utils.media_io import encode_video
 from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
+from ltx_core.types import AudioLatentShape
 from huggingface_hub import hf_hub_download
 
 # Import download functions for automatic model downloading
@@ -91,6 +94,88 @@ def log_error(message):
 
 def log_step(message):
     print(f"🔄 [STEP] {message}")
+
+
+# ============ AUDIO REFERENCE UTILITIES ============
+def load_and_encode_reference_audio(
+    audio_path: str,
+    audio_encoder,
+    target_frames: int,
+    device: torch.device,
+    noise_scale: float = 0.75
+) -> torch.Tensor:
+    """
+    Load reference audio, encode to latent space, and prepare for initialization.
+
+    Args:
+        audio_path: Path to reference audio file
+        audio_encoder: Audio VAE encoder
+        target_frames: Target number of audio frames for generation
+        device: Torch device
+        noise_scale: Noise scale for blending (0.0-1.0)
+
+    Returns:
+        Audio latent tensor ready for use as initial_audio_latent
+    """
+    log_step(f"Loading reference audio: {audio_path}")
+
+    # Load audio with torchaudio
+    waveform, sample_rate = torchaudio.load(audio_path)
+
+    # Resample to 16kHz if needed (LTX-2 audio VAE expects 16kHz)
+    if sample_rate != AUDIO_SAMPLE_RATE:
+        log_info(f"Resampling audio from {sample_rate}Hz to {AUDIO_SAMPLE_RATE}Hz")
+        resampler = torchaudio.transforms.Resample(sample_rate, AUDIO_SAMPLE_RATE)
+        waveform = resampler(waveform)
+
+    # Convert to mono if stereo
+    if waveform.shape[0] > 1:
+        waveform = waveform.mean(dim=0, keepdim=True)
+
+    # Move to device
+    waveform = waveform.to(device)
+
+    log_step("Encoding reference audio to latent space...")
+
+    # Encode audio to latent space
+    # Audio encoder expects spectrogram input, so we need to use AudioProcessor
+    from ltx_core.model.audio_vae import AudioProcessor
+
+    audio_processor = AudioProcessor(
+        sample_rate=AUDIO_SAMPLE_RATE,
+        n_fft=1024,
+        hop_length=160,
+        n_mels=64
+    )
+
+    # Convert waveform to spectrogram
+    spectrogram = audio_processor.waveform_to_spectrogram(waveform.unsqueeze(0))
+    spectrogram = spectrogram.to(device)
+
+    # Encode to latent
+    with torch.no_grad():
+        reference_latent = audio_encoder(spectrogram)
+
+    # Get reference dimensions
+    ref_frames = reference_latent.shape[2]
+
+    log_info(f"Reference audio: {ref_frames} frames → Target: {target_frames} frames")
+
+    # Upsample or downsample to match target duration
+    if ref_frames != target_frames:
+        log_step(f"Resampling reference latent from {ref_frames} to {target_frames} frames")
+        reference_latent = F.interpolate(
+            reference_latent,
+            size=(target_frames, reference_latent.shape[3]),
+            mode='bilinear',
+            align_corners=False
+        )
+
+    log_success(f"Reference audio encoded: shape={reference_latent.shape}, noise_scale={noise_scale}")
+
+    return reference_latent
+
+# ============ END AUDIO REFERENCE UTILITIES ============
 
 
 # Model configuration
@@ -299,6 +384,8 @@ class LTX2API:
         self,
         prompt: str,
         image_path: Optional[str] = None,
+        reference_audio_path: Optional[str] = None,
+        audio_noise_scale: float = 0.75,
         seed: int = 10,
         height: int = 1024,
         width: int = 1536,
@@ -311,11 +398,14 @@ class LTX2API:
         camera_lora_strength: float = 1.0
     ) -> str:
         """
-        Generate video using DistilledPipeline
+        Generate video using DistilledPipeline with optional reference audio for voice consistency
 
         Args:
             prompt: Text description
             image_path: Optional image conditioning path
+            reference_audio_path: Optional path to reference audio for voice consistency (Approach 1)
+            audio_noise_scale: Noise scale for reference audio blending (0.0-1.0, default: 0.75)
+                              Lower values = stronger voice consistency, higher = more variation
             seed: Random seed
             height: Output height (must be divisible by 64)
             width: Output width (must be divisible by 64)
@@ -358,6 +448,34 @@ class LTX2API:
             log_info(f"Prompt: {prompt}")
             log_info(f"Resolution: {width}x{height}, Frames: {num_frames}, FPS: {frame_rate}")
 
+            # Process reference audio if provided
+            reference_audio_latent = None
+            if reference_audio_path:
+                log_info(f"🎤 Using reference audio for voice consistency (noise_scale={audio_noise_scale})")
+
+                # Calculate target audio frames
+                # Audio latent frames = (num_video_frames - 1) based on LTX-2 architecture
+                target_audio_frames = num_frames
+
+                # Load audio encoder
+                audio_encoder = self.pipeline.model_ledger.audio_encoder()
+
+                # Encode reference audio
+                reference_audio_latent = load_and_encode_reference_audio(
+                    audio_path=reference_audio_path,
+                    audio_encoder=audio_encoder,
+                    target_frames=target_audio_frames,
+                    device=self.device,
+                    noise_scale=audio_noise_scale
+                )
+
+                # Clean up encoder to save memory
+                del audio_encoder
+                gc.collect()
+                torch.cuda.empty_cache()
+            else:
+                log_info("🎤 No reference audio provided, generating audio from scratch")
+
             # TilingConfig for memory-efficient VAE decoding
             tiling_config = TilingConfig.default()
 
@@ -369,7 +487,7 @@ class LTX2API:
             # This is critical for memory - without no_grad, PyTorch retains
             # computation graphs and FP8 upcast tensors, causing OOM
             with torch.no_grad():
-                video_iterator, audio = self.pipeline(
+                video_iterator, audio = self._generate_with_reference_audio(
                     prompt=prompt,
                     seed=seed,
                     height=height,
@@ -378,7 +496,9 @@ class LTX2API:
                     frame_rate=frame_rate,
                     images=images,
                     tiling_config=tiling_config,
-                    enhance_prompt=enhance_prompt
+                    enhance_prompt=enhance_prompt,
+                    reference_audio_latent=reference_audio_latent,
+                    audio_noise_scale=audio_noise_scale
                 )
 
                 log_memory("After pipeline call")
@@ -408,6 +528,172 @@ class LTX2API:
             shutil.rmtree(temp_dir, ignore_errors=True)
             raise
 
+    def _generate_with_reference_audio(
+        self,
+        prompt: str,
+        seed: int,
+        height: int,
+        width: int,
+        num_frames: int,
+        frame_rate: float,
+        images: list,
+        tiling_config: TilingConfig,
+        enhance_prompt: bool,
+        reference_audio_latent: Optional[torch.Tensor],
+        audio_noise_scale: float
+    ):
+        """
+        Custom wrapper around DistilledPipeline that injects reference audio latent.
+        This implements Approach 1 (audio latent initialization + partial noising).
+        """
+        from ltx_pipelines.utils.helpers import (
+            denoise_audio_video,
+            image_conditionings_by_replacing_latent,
+            euler_denoising_loop,
+            simple_denoising_func,
+            cleanup_memory
+        )
+        from ltx_pipelines.utils.constants import DISTILLED_SIGMA_VALUES, STAGE_2_DISTILLED_SIGMA_VALUES
+        from ltx_core.components.diffusion_steps import EulerDiffusionStep
+        from ltx_core.components.noisers import GaussianNoiser
+        from ltx_core.text_encoders.gemma import encode_text
+        from ltx_core.model.upsampler import upsample_video
+        from ltx_core.model.video_vae import decode_video as vae_decode_video
+        from ltx_core.model.audio_vae import decode_audio as vae_decode_audio
+        from ltx_core.types import VideoPixelShape
+        from ltx_pipelines.utils.helpers import generate_enhanced_prompt
+
+        generator = torch.Generator(device=self.device).manual_seed(seed)
+        noiser = GaussianNoiser(generator=generator)
+        stepper = EulerDiffusionStep()
+        dtype = torch.bfloat16
+
+        text_encoder = self.pipeline.model_ledger.text_encoder()
+        if enhance_prompt:
+            image_path_for_prompt = images[0][0] if len(images) > 0 else None
+            prompt = generate_enhanced_prompt(text_encoder, prompt, image_path_for_prompt)
+        context_p = encode_text(text_encoder, prompts=[prompt])[0]
+        video_context, audio_context = context_p
+
+        torch.cuda.synchronize()
+        del text_encoder
+        cleanup_memory()
+
+        # Stage 1: Initial low resolution video generation
+        video_encoder = self.pipeline.model_ledger.video_encoder()
+        transformer = self.pipeline.model_ledger.transformer()
+        stage_1_sigmas = torch.Tensor(DISTILLED_SIGMA_VALUES).to(self.device)
+
+        def denoising_loop(sigmas, video_state, audio_state, stepper):
+            return euler_denoising_loop(
+                sigmas=sigmas,
+                video_state=video_state,
+                audio_state=audio_state,
+                stepper=stepper,
+                denoise_fn=simple_denoising_func(
+                    video_context=video_context,
+                    audio_context=audio_context,
+                    transformer=transformer,
+                ),
+            )
+
+        stage_1_output_shape = VideoPixelShape(
+            batch=1,
+            frames=num_frames,
+            width=width // 2,
+            height=height // 2,
+            fps=frame_rate,
+        )
+        stage_1_conditionings = image_conditionings_by_replacing_latent(
+            images=images,
+            height=stage_1_output_shape.height,
+            width=stage_1_output_shape.width,
+            video_encoder=video_encoder,
+            dtype=dtype,
+            device=self.device,
+        )
+
+        # Downsample reference audio latent for Stage 1 (half resolution)
+        stage_1_reference_audio = None
+        if reference_audio_latent is not None:
+            # Stage 1 operates at half resolution, so we keep the same audio latent
+            # (audio is 1D temporal, not affected by spatial resolution)
+            stage_1_reference_audio = reference_audio_latent
+
+        video_state, audio_state = denoise_audio_video(
+            output_shape=stage_1_output_shape,
+            conditionings=stage_1_conditionings,
+            noiser=noiser,
+            sigmas=stage_1_sigmas,
+            stepper=stepper,
+            denoising_loop_fn=denoising_loop,
+            components=self.pipeline.pipeline_components,
+            dtype=dtype,
+            device=self.device,
+            initial_audio_latent=stage_1_reference_audio,  # ← Approach 1 injection
+            noise_scale=audio_noise_scale
+        )
+
+        # Stage 2: Upsample and refine
+        upscaled_video_latent = upsample_video(
+            latent=video_state.latent[:1],
+            video_encoder=video_encoder,
+            upsampler=self.pipeline.model_ledger.spatial_upsampler()
+        )
+
+        torch.cuda.synchronize()
+        cleanup_memory()
+
+        stage_2_sigmas = torch.Tensor(STAGE_2_DISTILLED_SIGMA_VALUES).to(self.device)
+        stage_2_output_shape = VideoPixelShape(
+            batch=1,
+            frames=num_frames,
+            width=width,
+            height=height,
+            fps=frame_rate
+        )
+        stage_2_conditionings = image_conditionings_by_replacing_latent(
+            images=images,
+            height=stage_2_output_shape.height,
+            width=stage_2_output_shape.width,
+            video_encoder=video_encoder,
+            dtype=dtype,
+            device=self.device,
+        )
+
+        video_state, audio_state = denoise_audio_video(
+            output_shape=stage_2_output_shape,
+            conditionings=stage_2_conditionings,
+            noiser=noiser,
+            sigmas=stage_2_sigmas,
+            stepper=stepper,
+            denoising_loop_fn=denoising_loop,
+            components=self.pipeline.pipeline_components,
+            dtype=dtype,
+            device=self.device,
+            noise_scale=stage_2_sigmas[0],
+            initial_video_latent=upscaled_video_latent,
+            initial_audio_latent=audio_state.latent,  # Re-use Stage 1 audio
+        )
+
+        torch.cuda.synchronize()
+        del transformer
+        del video_encoder
+        cleanup_memory()
+
+        decoded_video = vae_decode_video(
+            video_state.latent,
+            self.pipeline.model_ledger.video_decoder(),
+            tiling_config
+        )
+        decoded_audio = vae_decode_audio(
+            audio_state.latent,
+            self.pipeline.model_ledger.audio_decoder(),
+            self.pipeline.model_ledger.vocoder()
+        )
+
+        return decoded_video, decoded_audio
+
     def _video_to_base64(self, video_path: str) -> str:
         """Convert video file to base64 string"""
         try:
@@ -431,6 +717,8 @@ def handler(job):
     {
         "prompt": "A cat walking on the beach",  # required
         "image": "data:image/jpeg;base64,..." or "https://...",  # optional
+        "reference_audio": "data:audio/wav;base64,..." or "https://...",  # optional - for voice consistency
+        "audio_noise_scale": 0.75,  # optional, default: 0.75. Lower = stronger voice consistency (0.0-1.0)
         "seed": 10,  # optional, default: 10
         "height": 1024,  # optional, default: 1024 (must be divisible by 64)
         "width": 1536,  # optional, default: 1536 (must be divisible by 64)
@@ -478,6 +766,7 @@ def handler(job):
         enhance_prompt = input_data.get("enhance_prompt", False)
         camera_lora = input_data.get("camera_lora", "Static")
         camera_lora_strength = input_data.get("camera_lora_strength", 1.0)
+        audio_noise_scale = input_data.get("audio_noise_scale", 0.75)
 
         # Validate dimensions
         if height % 64 != 0 or width % 64 != 0:
@@ -500,16 +789,31 @@ def handler(job):
                 "error": "camera_lora_strength must be between 0.0 and 1.0"
             }
 
+        # Validate audio_noise_scale
+        if audio_noise_scale < 0.0 or audio_noise_scale > 1.0:
+            return {
+                "success": False,
+                "error": "audio_noise_scale must be between 0.0 and 1.0"
+            }
+
         # Prepare image if provided
         image_path = None
         if "image" in input_data:
             log_step("Preparing image input...")
             image_path = api._prepare_input_file(input_data["image"], suffix=".jpg")
 
+        # Prepare reference audio if provided
+        reference_audio_path = None
+        if "reference_audio" in input_data:
+            log_step("Preparing reference audio input...")
+            reference_audio_path = api._prepare_input_file(input_data["reference_audio"], suffix=".wav")
+
         # Generate video
         output_video_path = api.generate_video(
             prompt=prompt,
             image_path=image_path,
+            reference_audio_path=reference_audio_path,
+            audio_noise_scale=audio_noise_scale,
             seed=seed,
             height=height,
             width=width,
@@ -530,6 +834,8 @@ def handler(job):
         try:
             if image_path:
                 os.remove(image_path)
+            if reference_audio_path:
+                os.remove(reference_audio_path)
             temp_dir = os.path.dirname(output_video_path)
             shutil.rmtree(temp_dir, ignore_errors=True)
         except:
